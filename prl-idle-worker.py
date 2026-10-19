@@ -1,8 +1,8 @@
 #!/usr/bin/python3
-"""Supervisiona somente o minerador iniciado pelo monitor do Windows.
+"""Supervise only the miner started by the Windows monitor.
 
-O pipe de entrada tambem e um watchdog: EOF ou dez segundos sem mensagens
-encerram o grupo inteiro do minerador, mesmo se o monitor do Windows morrer.
+The input pipe also acts as a watchdog: EOF or ten seconds without messages
+stops the miner's entire process group, even if the Windows monitor dies.
 """
 
 import argparse
@@ -45,7 +45,7 @@ class Miner:
             return
         self.stop()
         if self.other_miner():
-            raise RuntimeError("Ja existe um SRBMiner iniciado fora do monitor.")
+            raise RuntimeError("An SRBMiner instance is already running outside the monitor.")
         log = self.state_dir / "miner.log"
         if log.exists() and log.stat().st_size > 5 * 1024 * 1024:
             log.replace(self.state_dir / "miner.log.1")
@@ -66,7 +66,7 @@ class Miner:
                 self.process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 pass
-            # Tambem elimina filhos que sobreviveram ao processo principal.
+            # Also terminate child processes that outlived the main process.
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -85,18 +85,18 @@ def reply(**data):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--script", type=Path, required=True,
-                        help="Caminho do script externo que inicia o minerador.")
+                        help="Path to the external script that starts the miner.")
     parser.add_argument("--state-dir", type=Path,
                         default=Path.home() / ".cache" / "prl-idle")
     args = parser.parse_args()
     if not args.script.is_file():
-        parser.error("Script de mineracao nao encontrado.")
+        parser.error("Mining script not found.")
     args.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock = (args.state_dir / "worker.lock").open("w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        reply(ok=False, error="Outro monitor ja esta conectado ao minerador.")
+        reply(ok=False, error="Another monitor is already connected to the miner.")
         return 1
 
     miner = Miner(args.script, args.state_dir)
@@ -119,7 +119,7 @@ def main():
                 break
             pending += chunk
             if len(pending) > 4096:
-                raise ValueError("Mensagem de controle grande demais.")
+                raise ValueError("Control message is too large.")
             while b"\n" in pending:
                 raw, pending = pending.split(b"\n", 1)
                 command = raw.strip().decode("ascii")
@@ -130,7 +130,7 @@ def main():
                     elif command == "stop":
                         miner.stop()
                     elif command != "status":
-                        raise ValueError("Comando de controle invalido.")
+                        raise ValueError("Invalid control command.")
                     reply(ok=True, **miner.status())
                 except (OSError, ValueError, RuntimeError) as exc:
                     miner.stop()

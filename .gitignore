@@ -1,7 +1,7 @@
-# Configuracao e caminhos desta maquina.
+# Configuration and paths for this machine.
 /prl-idle.json
 
-# Artefatos locais e logs.
+# Local artifacts and logs.
 __pycache__/
 *.py[cod]
 *.log
