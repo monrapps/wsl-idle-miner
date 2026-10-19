@@ -1,4 +1,4 @@
-"""Testes Linux do protocolo e do ciclo de vida, sem mineracao real."""
+"""Linux protocol and lifecycle tests, without real mining."""
 
 import json
 import os
@@ -14,7 +14,7 @@ import time
 import unittest
 
 
-WORKER = Path(__file__).resolve().parents[1] / "prl-idle-worker.py"
+WORKER = Path(__file__).resolve().parents[1] / "idle-miner-worker.py"
 
 
 def alive(pid):
@@ -54,9 +54,9 @@ class WorkerTests(unittest.TestCase):
 
     def read(self, process):
         ready, _, _ = select.select([process.stdout], [], [], 5)
-        self.assertTrue(ready, "Sem resposta do supervisor")
+        self.assertTrue(ready, "No response from the worker")
         raw = process.stdout.readline()
-        self.assertTrue(raw, "O supervisor fechou a conexao")
+        self.assertTrue(raw, "The worker closed the connection")
         return json.loads(raw)
 
     def command(self, process, command):
@@ -64,10 +64,13 @@ class WorkerTests(unittest.TestCase):
         process.stdin.flush()
         return self.read(process)
 
-    def launch(self, expect_ok=True):
+    def launch(self, expect_ok=True, miner_executable=None):
+        arguments = [sys.executable, str(WORKER), "--script", str(self.script),
+                     "--state-dir", str(self.root / "state")]
+        if miner_executable is not None:
+            arguments.extend(["--miner-executable", str(miner_executable)])
         process = subprocess.Popen(
-            [sys.executable, str(WORKER), "--script", str(self.script),
-             "--state-dir", str(self.root / "state")],
+            arguments,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         self.processes.append(process)
@@ -86,7 +89,7 @@ class WorkerTests(unittest.TestCase):
         deadline = time.monotonic() + 3
         while any(alive(pid) for pid in pids) and time.monotonic() < deadline:
             time.sleep(.02)
-        self.assertFalse(any(alive(pid) for pid in pids), f"Processos vivos: {pids}")
+        self.assertFalse(any(alive(pid) for pid in pids), f"Processes still running: {pids}")
 
     def test_start_is_idempotent_and_stop_terminates_miner(self):
         process = self.launch()
@@ -123,18 +126,55 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(second.wait(timeout=3), 1)
         self.assertEqual(self.command(first, "status")["pid"], pid)
 
-    def test_manual_srbminer_is_preserved(self):
-        binary = self.root / "SRBMiner-MULTI"
+    def test_configured_manual_miner_is_preserved(self):
+        binary = self.root / "custom miner"
         shutil.copyfile("/usr/bin/sleep", binary)
         binary.chmod(0o755)
         manual = subprocess.Popen([str(binary), "60"])
         self.processes.append(manual)
-        process = self.launch()
+        process = self.launch(miner_executable=binary)
+        self.assertTrue(self.command(process, "status")["other_miner"])
         answer = self.command(process, "start")
         self.assertFalse(answer["ok"], answer)
         self.assertIsNone(manual.poll())
         manual.terminate()
         manual.wait(timeout=3)
+
+    def test_unrelated_executable_does_not_block_start(self):
+        binary = self.root / "custom miner"
+        shutil.copyfile("/usr/bin/sleep", binary)
+        binary.chmod(0o755)
+        unrelated = subprocess.Popen(["/usr/bin/sleep", "60"])
+        self.processes.append(unrelated)
+        process = self.launch(miner_executable=binary)
+        pid = self.start_miner(process)
+        self.command(process, "stop")
+        self.assert_stopped(pid)
+        self.assertIsNone(unrelated.poll())
+        unrelated.terminate()
+        unrelated.wait(timeout=3)
+
+    def test_manual_detection_is_optional(self):
+        manual = subprocess.Popen(["/usr/bin/sleep", "60"])
+        self.processes.append(manual)
+        process = self.launch()
+        pid = self.start_miner(process)
+        self.command(process, "stop")
+        self.assert_stopped(pid)
+        self.assertIsNone(manual.poll())
+        manual.terminate()
+        manual.wait(timeout=3)
+
+    def test_missing_miner_executable_is_rejected(self):
+        result = subprocess.run(
+            [sys.executable, str(WORKER), "--script", str(self.script),
+             "--miner-executable", str(self.root / "missing miner"),
+             "--state-dir", str(self.root / "state")],
+            input=b"", capture_output=True, timeout=3,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"Miner executable not found.", result.stderr)
+        self.assertFalse((self.root / "state").exists())
 
     def test_termination_kills_children_ignoring_sigterm(self):
         fake = self.root / "fake.py"
@@ -155,7 +195,7 @@ class WorkerTests(unittest.TestCase):
         deadline = time.monotonic() + 3
         while not child_file.exists() and time.monotonic() < deadline:
             time.sleep(.02)
-        self.assertTrue(child_file.exists(), "O script deve executar na propria pasta")
+        self.assertTrue(child_file.exists(), "The script must run in its own directory")
         child = int(child_file.read_text())
         self.miners.append(child)
         self.command(process, "stop")

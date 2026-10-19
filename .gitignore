@@ -1,10 +1,10 @@
-# Configuracao e caminhos desta maquina.
-/prl-idle.json
+# Configuration and paths for this machine.
+/idle-miner.json
 
-# Artefatos locais e logs.
+# Local artifacts and logs.
 __pycache__/
 *.py[cod]
 *.log
 .venv/
-.prl-smoke-*/
+.idle-miner-smoke-*/
 .DS_Store
