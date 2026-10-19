@@ -2,11 +2,12 @@
   "idle_minutes": 15,
   "distribution": "Ubuntu-24.04",
   "linux_user": "YOUR_USER",
-  "worker": "/home/YOUR_USER/monrapps/wsl-idle-miner/prl-idle-worker.py",
+  "worker": "/home/YOUR_USER/monrapps/wsl-idle-miner/idle-miner-worker.py",
   "afterburner": "C:\\Program Files (x86)\\MSI Afterburner\\MSIAfterburner.exe",
   "afterburner_mode": "Profile",
   "mining_profile": 2,
   "normal_profile": 1,
   "settle_seconds": 3,
-  "miner_script": "/home/YOUR_USER/miner/prl.sh"
+  "miner_script": "/home/YOUR_USER/miner/start-miner.sh",
+  "miner_executable": null
 }

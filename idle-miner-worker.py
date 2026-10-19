@@ -18,17 +18,19 @@ import time
 
 
 class Miner:
-    def __init__(self, script, state_dir):
+    def __init__(self, script, state_dir, miner_executable=None):
         self.script = script.resolve()
         self.state_dir = state_dir
+        self.miner_executable = miner_executable.resolve() if miner_executable is not None else None
         self.process = None
         self.output = None
 
     def other_miner(self):
-        binary = self.script.parent / "SRBMiner-MULTI"
+        if self.miner_executable is None:
+            return False
         for process in Path("/proc").glob("[0-9]*"):
             try:
-                if (process / "exe").resolve() == binary:
+                if (process / "exe").resolve() == self.miner_executable:
                     if self.process is None or int(process.name) != self.process.pid:
                         return True
             except (OSError, RuntimeError):
@@ -45,7 +47,7 @@ class Miner:
             return
         self.stop()
         if self.other_miner():
-            raise RuntimeError("An SRBMiner instance is already running outside the monitor.")
+            raise RuntimeError("A miner instance is already running outside the monitor.")
         log = self.state_dir / "miner.log"
         if log.exists() and log.stat().st_size > 5 * 1024 * 1024:
             log.replace(self.state_dir / "miner.log.1")
@@ -86,11 +88,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--script", type=Path, required=True,
                         help="Path to the external script that starts the miner.")
+    parser.add_argument("--miner-executable", type=Path,
+                        help="Path to the miner binary to detect instances started outside the monitor.")
     parser.add_argument("--state-dir", type=Path,
-                        default=Path.home() / ".cache" / "prl-idle")
+                        default=Path.home() / ".cache" / "wsl-idle-miner")
     args = parser.parse_args()
     if not args.script.is_file():
         parser.error("Mining script not found.")
+    if args.miner_executable is not None and not args.miner_executable.is_file():
+        parser.error("Miner executable not found.")
     args.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock = (args.state_dir / "worker.lock").open("w")
     try:
@@ -99,7 +105,7 @@ def main():
         reply(ok=False, error="Another monitor is already connected to the miner.")
         return 1
 
-    miner = Miner(args.script, args.state_dir)
+    miner = Miner(args.script, args.state_dir, args.miner_executable)
 
     def terminate(signum, frame):
         raise SystemExit(0)

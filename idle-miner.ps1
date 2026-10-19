@@ -5,10 +5,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$taskName = 'PRL-Idle-Miner'
-$dataDir = Join-Path $env:LOCALAPPDATA 'PRLIdleMiner'
-$installedScript = Join-Path $dataDir 'prl-idle.ps1'
-$installedConfig = Join-Path $dataDir 'prl-idle.json'
+$taskName = 'WSL-Idle-Miner'
+$dataDir = Join-Path $env:LOCALAPPDATA 'WSLIdleMiner'
+$installedScript = Join-Path $dataDir 'idle-miner.ps1'
+$installedConfig = Join-Path $dataDir 'idle-miner.json'
 $statePath = Join-Path $dataDir 'state.json'
 $stopPath = Join-Path $dataDir 'stop'
 $profileMarker = Join-Path $dataDir 'mining-profile-active'
@@ -16,7 +16,7 @@ if (-not $ConfigPath) {
     if ($Action -ne 'Install' -and (Test-Path -LiteralPath $installedConfig)) {
         $ConfigPath = $installedConfig
     } else {
-        $ConfigPath = Join-Path $PSScriptRoot 'prl-idle.json'
+        $ConfigPath = Join-Path $PSScriptRoot 'idle-miner.json'
     }
 }
 $cfg = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
@@ -60,7 +60,7 @@ function Initialize-IdleApi {
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
-public static class PrlWindowsIdle {
+public static class WslWindowsIdle {
     [StructLayout(LayoutKind.Sequential)]
     struct LastInput { public uint size; public uint time; }
     [DllImport("user32.dll", SetLastError = true)]
@@ -91,9 +91,11 @@ function Assert-Config {
         throw 'The normal-use profile must be a number from 1 to 5 or null.'
     }
     if (-not (Test-Path -LiteralPath $cfg.afterburner)) { throw 'MSI Afterburner not found.' }
-    foreach ($argument in @($cfg.worker, $cfg.miner_script)) {
+    $wslPaths = @($cfg.worker, $cfg.miner_script)
+    if ($null -ne $cfg.miner_executable) { $wslPaths += $cfg.miner_executable }
+    foreach ($argument in $wslPaths) {
         if ([string]::IsNullOrWhiteSpace($argument) -or -not $argument.StartsWith('/') -or $argument -match '["\r\n]') {
-            throw 'Set worker and miner_script to absolute WSL paths, without quotes or line breaks.'
+            throw 'Set worker, miner_script, and optional miner_executable to absolute WSL paths, without quotes or line breaks.'
         }
     }
     if ($cfg.distribution -notmatch '^[A-Za-z0-9_.-]+$' -or $cfg.linux_user -notmatch '^[A-Za-z0-9_.-]+$') {
@@ -105,7 +107,7 @@ switch ($Action) {
     'Check' {
         Initialize-IdleApi
         [pscustomobject]@{
-            IdleSeconds = [PrlWindowsIdle]::Seconds()
+            IdleSeconds = [WslWindowsIdle]::Seconds()
             IdleMinutesRequired = $cfg.idle_minutes
             AfterburnerInstalled = Test-Path -LiteralPath $cfg.afterburner
             AfterburnerRunning = [bool](Get-Process MSIAfterburner -ErrorAction SilentlyContinue)
@@ -153,8 +155,7 @@ switch ($Action) {
             exit 0
         }
         $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        # Accept the legacy Portuguese description when upgrading an existing task.
-        if ($existing -and $existing.Description -notin @('PRL idle mining with MSI Afterburner.', 'Mineracao PRL por ociosidade com MSI Afterburner.')) {
+        if ($existing -and $existing.Description -ne 'Idle mining in WSL with MSI Afterburner.') {
             throw 'A task with this name and a different description already exists; it has been preserved.'
         }
         $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -Action Run -ConfigPath "{1}"' -f $installedScript, $installedConfig
@@ -162,13 +163,13 @@ switch ($Action) {
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
         $taskPrincipal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Highest
         $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-        Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $trigger -Principal $taskPrincipal -Settings $settings -Description 'PRL idle mining with MSI Afterburner.' -Force | Out-Null
+        Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $trigger -Principal $taskPrincipal -Settings $settings -Description 'Idle mining in WSL with MSI Afterburner.' -Force | Out-Null
         Write-Output "Task $taskName installed. Use Start to activate it now."
         exit 0
     }
     'Start' {
         if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
-            throw 'Install first with ./prl-idle.sh Install, or use Run in the foreground.'
+            throw 'Install first with ./idle-miner.sh Install, or use Run in the foreground.'
         }
         Start-ScheduledTask -TaskName $taskName
         Write-Output 'Monitor started in the background.'
@@ -178,7 +179,7 @@ switch ($Action) {
 
 Assert-Config
 
-$mutex = New-Object Threading.Mutex($false, 'Local\PRLIdleMiner')
+$mutex = New-Object Threading.Mutex($false, 'Local\WSLIdleMiner')
 try { $acquired = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $acquired = $true }
 if (-not $acquired) { $mutex.Dispose(); throw 'The monitor is already running in this session.' }
 $script:worker = $null
@@ -209,6 +210,9 @@ function Open-Worker {
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = "$env:SystemRoot\System32\wsl.exe"
     $info.Arguments = '--distribution {0} --user {1} --exec /usr/bin/python3 "{2}" --script "{3}"' -f $cfg.distribution, $cfg.linux_user, $cfg.worker, $cfg.miner_script
+    if ($null -ne $cfg.miner_executable) {
+        $info.Arguments += ' --miner-executable "{0}"' -f $cfg.miner_executable
+    }
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.RedirectStandardInput = $true
@@ -260,7 +264,7 @@ try {
     Initialize-IdleApi
     Write-Log "Monitor started: $($cfg.idle_minutes) minutes; mining profile $($cfg.mining_profile), normal-use profile $($cfg.normal_profile)."
     while (-not (Test-Path -LiteralPath $stopPath)) {
-        $idle = [PrlWindowsIdle]::Seconds()
+        $idle = [WslWindowsIdle]::Seconds()
         try {
             if ($idle -lt $cfg.idle_minutes * 60) {
                 if ($script:worker) {
@@ -285,9 +289,9 @@ try {
                 for ($i = 0; $i -lt $cfg.settle_seconds; $i++) {
                     Send-Worker 'status' | Out-Null
                     Start-Sleep -Seconds 1
-                    if ([PrlWindowsIdle]::Seconds() -lt $cfg.idle_minutes * 60 -or (Test-Path -LiteralPath $stopPath)) { break }
+                    if ([WslWindowsIdle]::Seconds() -lt $cfg.idle_minutes * 60 -or (Test-Path -LiteralPath $stopPath)) { break }
                 }
-                if ([PrlWindowsIdle]::Seconds() -ge $cfg.idle_minutes * 60 -and -not (Test-Path -LiteralPath $stopPath)) {
+                if ([WslWindowsIdle]::Seconds() -ge $cfg.idle_minutes * 60 -and -not (Test-Path -LiteralPath $stopPath)) {
                     $answer = Send-Worker 'start'
                     $script:mining = $answer.running
                     Write-Log "Mining started, Linux PID $($answer.pid)."
